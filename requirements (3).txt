@@ -1,0 +1,18 @@
+# MOLOA — Python dependencies
+# Install with:  pip install -r requirements.txt
+
+# Core data handling
+numpy>=1.24,<2.0
+pandas>=2.0
+pyarrow>=14.0          # parquet read/write
+
+# Machine learning
+scikit-learn>=1.3
+xgboost>=2.0
+
+# Survival analysis (Phase 2 Cox model)
+lifelines>=0.27
+
+# Hyperdimensional computing (KalmanHD trajectory features)
+torch>=2.0
+torch-hd>=5.5          # imported as `torchhd`
