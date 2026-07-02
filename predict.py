@@ -1,5 +1,5 @@
 """
-predict.py — Score a single mortgage application with the MOLOA Phase 1 pipeline.
+predict.py — Score a single mortgage application with the MOLOA Phase 1 pipeline. 
 
 A standalone command-line wrapper around the trained Phase 1 artifacts
 (five specialist agents + the Learned Agent Router). It demonstrates that the
