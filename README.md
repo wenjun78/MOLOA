@@ -14,7 +14,7 @@
 
 **WQF7023 Research Project · Master of Artificial Intelligence · Universiti Malaya**
 
-Author: Lau Wen Jun · Supervisor: Prof Loo Chu Kiong
+Author: Lau Wen Jun · Supervisor: Prof Loo Chu Kiong 
 
 </div>
 
