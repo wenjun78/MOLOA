@@ -1,6 +1,6 @@
 <div align="center">
 
-# MOLOA 
+# MOLOA
 
 ### Multi-Agent Orchestration for Loan Origination and Aftercare
 
