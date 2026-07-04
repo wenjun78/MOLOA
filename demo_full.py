@@ -25,7 +25,7 @@ Requires (download from your Google Drive MOLOA_data folder):
     phase2_predictions.parquet
     phase3_predictions.parquet
 
-Set the folder with MOLOA_DATA_DIR (defaults to ./MOLOA_data).
+Set the folder with MOLOA_DATA_DIR (defaults to ./demo, where the parquets are committed).
 Dependencies: pandas, pyarrow  (see requirements.txt)
 """
 
@@ -35,7 +35,7 @@ import sys
 
 import pandas as pd
 
-DATA_DIR = os.environ.get("MOLOA_DATA_DIR", "./MOLOA_data")
+DATA_DIR = os.environ.get("MOLOA_DATA_DIR", "./demo")
 
 P1 = os.path.join(DATA_DIR, "phase1_predictions.parquet")
 P2 = os.path.join(DATA_DIR, "phase2_predictions.parquet")
