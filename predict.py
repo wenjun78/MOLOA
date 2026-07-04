@@ -1,209 +1,212 @@
 """
-predict.py — Score a single mortgage application with the MOLOA Phase 1 pipeline. 
+predict.py — Score a mortgage across all three MOLOA phases from simple inputs.
 
-A standalone command-line wrapper around the trained Phase 1 artifacts
-(five specialist agents + the Learned Agent Router). It demonstrates that the
-research pipeline runs as a tool, separate from the notebook.
+This mirrors the interactive "What-if" scorer in moloa_demo.html. It uses the
+same approximation of the trained-model behaviour, so it needs no model files,
+no PyTorch, and no version-sensitive pickles — it just runs.
+
+    Phase 1 (origination) -> Phase 2 (month 6) -> Phase 3 (distress)
 
 Usage:
-    # Score the built-in example applicant
+    # Score the built-in strong and weak example applicants
     python predict.py --demo
 
-    # Score from a JSON file mapping feature name -> value
-    python predict.py --input applicant.json
+    # Score from a JSON file of applicant values
+    python predict.py --input applicant_strong.json
 
-Requires the trained artifact produced by the notebook:
-    phase1_models.pkl
+    # Score directly from the command line
+    python predict.py --fico 780 --dti 25 --ltv 70 --rate 6.2 --upb 250000 --months-late 0
 
-Set its location with the MOLOA_DATA_DIR environment variable
-(defaults to ./MOLOA_data).
+JSON / CLI fields (all optional, sensible defaults applied):
+    fico, dti, ltv, rate, upb, months_late,
+    property_type (SF/PU/CO/MH), occupancy (P/S/I),
+    purpose (P/C/N), first_time_homebuyer (Y/N)
 
-Dependencies: numpy, torch, xgboost, scikit-learn  (see requirements.txt)
+Dependencies: none (standard library only).
 """
 
 import argparse
 import json
-import os
-import pickle
+import math
 import sys
 
-import numpy as np
 
-# torch and xgboost are needed at unpickle time because the saved objects
-# (LearnedAgentRouter state_dict, SpecialistAgent.model) reference them.
-import torch
-import torch.nn as nn
-
-
-DATA_DIR = os.environ.get("MOLOA_DATA_DIR", "./MOLOA_data")
-MODELS_PATH = os.path.join(DATA_DIR, "phase1_models.pkl")
+def clamp(x, lo, hi):
+    return max(lo, min(hi, x))
 
 
 # ---------------------------------------------------------------------------
-# Model class definitions.
-#
-# These MUST match the classes the notebook used when it pickled the artifacts,
-# so that pickle.load() can reconstruct the SpecialistAgent objects, and so we
-# can rebuild the LearnedAgentRouter and load its saved state_dict.
+# Phase approximations — ported directly from moloa_demo.html
+# (approxPhase1 / approxPhase2 / approxPhase3). Geographic uses a fixed prior
+# instead of the HTML's small random term, so CLI output is reproducible.
 # ---------------------------------------------------------------------------
 
-class SpecialistAgent:
-    """XGBoost classifier on a non-overlapping feature partition.
+def approx_phase1(fico, dti, ltv, rate, upb, prop_type, fthb, occupancy, purpose):
+    credit = clamp(0.4 + (700 - fico) * 0.005 + (dti - 35) * 0.012, 0.05, 0.95)
+    collateral_base = 0.3 + max(0, ltv - 80) * 0.012
+    prop_risk = {"SF": 0, "PU": 0.02, "CO": 0.04, "MH": 0.10}.get(prop_type, 0)
+    occ_risk = {"P": 0, "S": 0.03, "I": 0.06}.get(occupancy, 0)
+    collateral = clamp(collateral_base + prop_risk + occ_risk, 0.05, 0.95)
+    geographic = 0.32  # fixed prior (HTML uses 0.30 + small noise)
+    product_base = 0.35 + (rate - 5) * 0.04 + (0.05 if upb > 500000 else 0)
+    purpose_risk = {"P": 0, "C": 0.03, "N": 0.01}.get(purpose, 0)
+    product = clamp(product_base + purpose_risk, 0.05, 0.95)
+    borrower = clamp(0.3 + (0.05 if fthb == "Y" else 0), 0.1, 0.9)
 
-    Reconstructed at unpickle time. Only the attributes used for inference
-    (`col_indices`, `model`) are relied upon here.
-    """
-
-    def __init__(self, name=None, feature_names=None, spw_value=None,
-                 early_stopping_rounds=40):
-        self.name = name
-        self.feature_names = feature_names
-        self.col_indices = None  # populated from the pickle
-        self.model = None        # populated from the pickle
-
-    def predict(self, X):
-        """Return (recommendation, confidence, reasoning, probability)."""
-        Xd = X[:, self.col_indices]
-        proba = self.model.predict_proba(Xd)[:, 1]
-        rec = (proba >= 0.5).astype(int)
-        conf = np.abs(proba - 0.5) * 2
-        return rec, conf, None, proba
+    gates = {"credit": 0.42, "collateral": 0.15, "geographic": 0.14,
+             "product": 0.18, "borrower": 0.11}
+    lar = (gates["credit"] * credit + gates["collateral"] * collateral
+           + gates["geographic"] * geographic + gates["product"] * product
+           + gates["borrower"] * borrower)
+    specialist = {"credit": credit, "collateral": collateral,
+                  "geographic": geographic, "product": product, "borrower": borrower}
+    return {"lar": lar, "gates": gates, "specialist": specialist}
 
 
-class LearnedAgentRouter(nn.Module):
-    """Per-loan attention gate over the specialist agents (Contribution 1)."""
+def approx_phase2(p1_lar, m6, ltv):
+    trajectory = clamp(0.25 + m6 * 0.18, 0.05, 0.99)
+    equity = clamp(0.3 + max(0, ltv - 80) * 0.012, 0.05, 0.99)
+    prior = p1_lar
+    if m6 >= 2:
+        gates = {"trajectory": 0.70, "equity": 0.10, "priordecision": 0.20}
+    elif m6 >= 1:
+        gates = {"trajectory": 0.45, "equity": 0.10, "priordecision": 0.45}
+    else:
+        gates = {"trajectory": 0.07, "equity": 0.05, "priordecision": 0.88}
+    lar = (gates["trajectory"] * trajectory + gates["equity"] * equity
+           + gates["priordecision"] * prior)
+    cox = math.exp(lar * 5 + m6 * 0.6) * 0.5
+    return {"lar": lar, "gates": gates,
+            "specialist": {"trajectory": trajectory, "equity": equity, "priordecision": prior},
+            "cox": cox}
 
-    def __init__(self, n_features, n_agents=5, hidden=64):
-        super().__init__()
-        self.gate_net = nn.Sequential(
-            nn.Linear(n_agents * 2 + n_features, hidden), nn.ReLU(), nn.Dropout(0.1),
-            nn.Linear(hidden, hidden), nn.ReLU(),
-            nn.Linear(hidden, n_agents),
-        )
-        self.bias = nn.Parameter(torch.zeros(1))
 
-    def forward(self, x_features, agent_probas, agent_confs):
-        gate_input = torch.cat([agent_probas, agent_confs, x_features], dim=1)
-        gates = torch.softmax(self.gate_net(gate_input), dim=1)
-        weighted = (gates * agent_probas).sum(dim=1)
-        return torch.sigmoid(weighted + self.bias), gates
+def approx_phase3(distressed, fico, ltv):
+    if not distressed:
+        return {"triggered": False}
+    cate = 25 + (700 - fico) * 0.05 - (ltv - 80) * 0.15
+    cate = clamp(cate, -30, 80)
+    cate_lo, cate_hi = cate - 30, cate + 25
+    rec = "SPECIALIST"
+    if cate > 5 and cate_lo > 0:
+        rec = "MODIFY"
+    elif cate > -2 and (cate_hi - cate_lo) < 30:
+        rec = "FORBEAR"
+    return {"triggered": True, "cate": cate, "cate_lo": cate_lo,
+            "cate_hi": cate_hi, "recommendation": rec}
 
 
 # ---------------------------------------------------------------------------
-# Inference
+# Scoring + presentation
 # ---------------------------------------------------------------------------
 
-def load_artifacts(path: str) -> dict:
-    if not os.path.exists(path):
-        sys.exit(
-            f"ERROR: trained models not found at '{path}'.\n"
-            f"Run the notebook (notebooks/MOLOA_full_pipeline.ipynb) first to "
-            f"produce phase1_models.pkl, or set MOLOA_DATA_DIR to its folder."
-        )
-    with open(path, "rb") as f:
-        return pickle.load(f)
-
-
-def build_feature_vector(applicant: dict, all_features: list) -> np.ndarray:
-    """Lay the applicant's values out in the exact ALL_FEATURES order.
-
-    Missing features are filled with NaN — XGBoost handles missing natively,
-    which matches the notebook's sentinel handling.
-    """
-    row = np.full(len(all_features), np.nan, dtype=np.float32)
-    unknown = []
-    for k, v in applicant.items():
-        if k in all_features:
-            try:
-                row[all_features.index(k)] = float(v)
-            except (TypeError, ValueError):
-                unknown.append(k)  # non-numeric (e.g. categorical string)
-        else:
-            unknown.append(k)
-    if unknown:
-        print(f"  (note: ignored {len(unknown)} unrecognised/non-numeric "
-              f"feature(s): {', '.join(unknown)})", file=sys.stderr)
-    return row.reshape(1, -1)
-
-
-def score(applicant: dict, art: dict) -> dict:
-    all_features = art["ALL_FEATURES"]
-    agents = art["agents"]
-    scaler = art["scaler_full"]
-    threshold = art.get("best_t_lar_refit", art.get("best_t_lar_train", 0.5))
-
-    # 1. Build the feature vector in the trained order
-    X = build_feature_vector(applicant, all_features)
-
-    # 2. Each specialist agent emits a probability + confidence
-    agent_names = list(agents.keys())
-    probas = np.column_stack([agents[n].predict(X)[3] for n in agent_names])
-    confs = np.column_stack([agents[n].predict(X)[1] for n in agent_names])
-
-    # 3. Rebuild the LAR and load its trained weights
-    lar = LearnedAgentRouter(len(all_features), n_agents=len(agent_names))
-    lar.load_state_dict(art["lar_state_dict"])
-    lar.eval()
-
-    # 4. Forward pass: scaled features + agent signals -> routed probability
-    X_scaled = torch.FloatTensor(scaler.transform(np.nan_to_num(X)))
-    p_t = torch.FloatTensor(probas)
-    c_t = torch.FloatTensor(confs)
-    with torch.no_grad():
-        routed_proba, gates = lar(X_scaled, p_t, c_t)
-
-    default_prob = float(routed_proba.item())
-    decision = "DENY / ESCALATE" if default_prob >= threshold else "APPROVE"
-
-    # Per-agent contribution = how much the router leaned on each agent
-    gate_weights = {n: round(float(g), 4)
-                    for n, g in zip(agent_names, gates.squeeze().tolist())}
-    agent_probs = {n: round(float(p), 4)
-                   for n, p in zip(agent_names, probas.ravel().tolist())}
-
-    return {
-        "default_probability": round(default_prob, 4),
-        "decision_threshold": round(float(threshold), 4),
-        "decision": decision,
-        "agent_probabilities": agent_probs,
-        "router_gate_weights": gate_weights,
-    }
-
-
-# A representative low-risk applicant for --demo.
-# Feature names must match those in the trained ALL_FEATURES; unknown keys are
-# ignored with a note, so this works as an illustration regardless of schema.
-DEMO_APPLICANT = {
-    "CREDIT_SCORE": 760,
-    "ORIG_DTI": 28,
-    "ORIG_LTV": 75,
-    "ORIG_UPB": 240000,
-    "ORIG_INTEREST_RATE": 6.5,
-    "ORIG_LOAN_TERM": 360,
-    "NUM_UNITS": 1,
+DEFAULTS = {
+    "fico": 740, "dti": 30, "ltv": 80, "rate": 6.5, "upb": 250000,
+    "months_late": 0, "property_type": "SF", "occupancy": "P",
+    "purpose": "P", "first_time_homebuyer": "N",
 }
 
 
+def normalise(app: dict) -> dict:
+    a = dict(DEFAULTS)
+    for k, v in app.items():
+        key = k.lower().replace("-", "_")
+        if key in a:
+            a[key] = v
+    return a
+
+
+def score(app: dict) -> dict:
+    a = normalise(app)
+    fico, dti, ltv = int(a["fico"]), int(a["dti"]), int(a["ltv"])
+    rate, upb = float(a["rate"]), int(a["upb"])
+    m6 = int(a["months_late"])
+    fthb = str(a["first_time_homebuyer"]).upper()[:1]
+
+    p1 = approx_phase1(fico, dti, ltv, rate, upb, a["property_type"], fthb,
+                       a["occupancy"], a["purpose"])
+    p1_decision = "DENY / ESCALATE" if p1["lar"] > 0.50 else "APPROVE"
+    dom1 = max(p1["gates"], key=p1["gates"].get)
+
+    p2 = approx_phase2(p1["lar"], m6, ltv)
+    p2_decision = "WATCHLIST" if p2["lar"] > 0.55 else "CONTINUE"
+    dom2 = max(p2["gates"], key=p2["gates"].get)
+
+    distressed = m6 >= 2
+    p3 = approx_phase3(distressed, fico, ltv)
+
+    return {"inputs": a, "p1": p1, "p1_decision": p1_decision, "dom1": dom1,
+            "p2": p2, "p2_decision": p2_decision, "dom2": dom2, "p3": p3}
+
+
+BAR = "=" * 66
+
+
+def render(app_label, r):
+    a = r["inputs"]
+    print(BAR)
+    print(f"  MOLOA lifecycle score — {app_label}")
+    print(f"  FICO {a['fico']} · DTI {a['dti']}% · LTV {a['ltv']}% · "
+          f"rate {a['rate']} · UPB ${a['upb']:,} · {a['months_late']} mo late")
+    print(BAR)
+
+    print("\n[ PHASE 1 — ORIGINATION (month 0) ]")
+    print(f"  Default probability : {r['p1']['lar']*100:.1f}%")
+    print(f"  Decision            : {r['p1_decision']}")
+    print(f"  Router leaned on    : {r['dom1'].capitalize()}Agent "
+          f"({r['p1']['gates'][r['dom1']]*100:.0f}% of the weight)")
+
+    print("\n[ PHASE 2 — EARLY MONITORING (month 6) ]")
+    print(f"  Updated probability : {r['p2']['lar']*100:.1f}%")
+    print(f"  Cox partial hazard  : {r['p2']['cox']:.3f}")
+    print(f"  Monitoring decision : {r['p2_decision']}")
+    print(f"  Router leaned on    : {r['dom2'].capitalize()}")
+
+    print("\n[ PHASE 3 — DISTRESS INTERVENTION (first 60+DPD) ]")
+    if r["p3"]["triggered"]:
+        p3 = r["p3"]
+        print(f"  Estimated treatment effect : {p3['cate']:+.1f} pts "
+              f"(CI [{p3['cate_lo']:+.1f}, {p3['cate_hi']:+.1f}])")
+        print(f"  Recommended action         : {p3['recommendation']}")
+    else:
+        print("  Loan is not distressed — no intervention needed.")
+    print(BAR + "\n")
+
+
+DEMO_STRONG = {"fico": 790, "dti": 22, "ltv": 65, "rate": 6.1, "upb": 210000, "months_late": 0}
+DEMO_WEAK = {"fico": 585, "dti": 52, "ltv": 97, "rate": 8.9, "upb": 420000, "months_late": 3}
+
+
 def main():
-    parser = argparse.ArgumentParser(
-        description="Score a mortgage application with MOLOA Phase 1.")
-    group = parser.add_mutually_exclusive_group(required=True)
-    group.add_argument("--demo", action="store_true",
-                       help="Score the built-in example applicant.")
-    group.add_argument("--input", type=str,
-                       help="Path to a JSON file mapping feature name -> value.")
-    args = parser.parse_args()
+    ap = argparse.ArgumentParser(description="Score a mortgage across all 3 MOLOA phases.")
+    ap.add_argument("--demo", action="store_true", help="Score built-in strong & weak applicants.")
+    ap.add_argument("--input", type=str, help="Path to a JSON file of applicant values.")
+    for f in ["fico", "dti", "ltv", "upb", "months-late"]:
+        ap.add_argument(f"--{f}", type=int)
+    ap.add_argument("--rate", type=float)
+    ap.add_argument("--property-type", type=str)
+    ap.add_argument("--occupancy", type=str)
+    ap.add_argument("--purpose", type=str)
+    ap.add_argument("--first-time-homebuyer", type=str)
+    args = ap.parse_args()
 
     if args.demo:
-        applicant = DEMO_APPLICANT
-        print("Scoring built-in demo applicant...\n", file=sys.stderr)
-    else:
-        with open(args.input) as f:
-            applicant = json.load(f)
+        render("STRONG applicant", score(DEMO_STRONG))
+        render("WEAK applicant", score(DEMO_WEAK))
+        return
 
-    art = load_artifacts(MODELS_PATH)
-    result = score(applicant, art)
-    print(json.dumps(result, indent=2))
+    if args.input:
+        with open(args.input) as f:
+            render(args.input, score(json.load(f)))
+        return
+
+    # CLI-flag mode: gather any provided flags
+    cli = {k: v for k, v in vars(args).items()
+           if v is not None and k not in ("demo", "input")}
+    if cli:
+        render("command-line applicant", score(cli))
+    else:
+        ap.print_help()
 
 
 if __name__ == "__main__":

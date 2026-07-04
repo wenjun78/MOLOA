@@ -1,0 +1,11 @@
+{
+  "fico": 585,
+  "dti": 52,
+  "ltv": 97,
+  "rate": 8.9,
+  "upb": 420000,
+  "months_late": 3,
+  "property_type": "CO",
+  "occupancy": "I",
+  "first_time_homebuyer": "Y"
+}

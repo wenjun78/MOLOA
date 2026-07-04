@@ -1,0 +1,11 @@
+{
+  "fico": 790,
+  "dti": 22,
+  "ltv": 65,
+  "rate": 6.1,
+  "upb": 210000,
+  "months_late": 0,
+  "property_type": "SF",
+  "occupancy": "P",
+  "first_time_homebuyer": "N"
+}
