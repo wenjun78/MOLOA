@@ -147,7 +147,7 @@ python demo_full.py --list
 python demo_full.py --all
 
 # Trace a specific loan
-python demo_full.py --loan F22Q1000123
+python demo_full.py --loan F22Q20008051
 ```
 
 ### 3. `demo/moloa_demo.html` — interactive browser demo
