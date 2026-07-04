@@ -38,8 +38,8 @@ python predict.py --demo
 # 4. Trace one real loan through all three phases (reads the committed prediction files)
 python demo_full.py
 
-# 5. Open the interactive demo in your browser
-#    (Windows: start demo/moloa_demo.html · macOS: open demo/moloa_demo.html)
+# 5. Open the interactive demo — locally or at the live link:
+#    https://wenjun78.github.io/MOLOA/demo/moloa_demo.html
 ```
 
 All three demos run out of the box after cloning — no downloads or GPU required.
@@ -154,6 +154,8 @@ python demo_full.py --loan F22Q1000123
 
 A self-contained interactive walkthrough (five agents, architecture, real loans,
 and a live "What-if" scorer). Just open the file — no server, no install.
+
+**Live version:** https://wenjun78.github.io/MOLOA/demo/moloa_demo.html
 
 In the **What-if** tab, drag the **FICO** slider to flip the decision between
 APPROVE and DENY, and set **M6 Max Delinquency** to 2 or higher to trigger the
