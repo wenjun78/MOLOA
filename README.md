@@ -22,6 +22,10 @@ Author: Lau Wen Jun · Supervisor: Prof Loo Chu Kiong
 
 MOLOA follows a residential mortgage through its full lifecycle: **origination** at month 0, **early monitoring** at month 6, and **distress intervention** at the first 60+ days-past-due event. It is evaluated on the Freddie Mac Single-Family Loan-Level Dataset (SFLLD) 2022.
 
+## Detailed research and engineering case study
+
+For the research background, objectives, three-phase architecture, specialist agents, technical terms (LAR, CAN, AEL, Cox survival, KalmanHD, IPTW and CATE), evidence, limitations and technical interview explanations, read **[PROJECT_CASE_STUDY.md](PROJECT_CASE_STUDY.md)**. The case study distinguishes recorded research predictions from the approximate What-if demo, and observational treatment-effect estimates from proven interventions.
+
 ## Quick start
 
 ```bash
